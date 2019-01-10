@@ -35,6 +35,8 @@ params = {
                          ("hidden_size", 200, "hidden_size"),
                          ('max_sen_len', 50, 'max number of tokens per sentence'),
                          ('max_doc_len', 40, 'max number of tokens per sentence'),
+                         ('sen_aspect_cnt', 1, 'max number of tokens per sentence'),
+                         ('doc_aspect_cnt', 1, 'max number of tokens per sentence'),
                          ("lr", .001, "Learning rate"),
                          ("l2_rate", 0., "rate of l2 regularization"),
                          ("lambda1", .4, "proportion of the total loss"),
@@ -111,6 +113,7 @@ with tf.Graph().as_default():
         # build the model
         model_params = {
             'max_sen_len': flags.max_sen_len, 'max_doc_len': flags.max_doc_len,
+            'sen_aspect_cnt': flags.sen_aspect_cnt, 'doc_aspect_cnt': flags.doc_aspect_cnt,
             'cls_cnt': flags.cls_cnt, 'embedding': embedding,
             'emb_dim': flags.emb_dim, 'hidden_size': flags.hidden_size,
             'usr_cnt': usr_cnt, 'prd_cnt': prd_cnt,
