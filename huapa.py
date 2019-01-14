@@ -1,10 +1,10 @@
 import tensorflow as tf
 from tensorflow import constant as const
-from tensroflow.contrib.layers import xavier_initializer as xavier
-from layers.hop import hop
+from tensorflow.contrib.layers import xavier_initializer as xavier
 from colored import stylize, fg
 from math import sqrt
 import numpy as np
+from layers.hop import hop
 lookup = tf.nn.embedding_lookup
 
 
@@ -76,7 +76,7 @@ class HUAPA(object):
         return [d_hat] + d_hats
 
     def dnsc(self, x, max_sen_len, max_doc_len, sen_len, doc_len, identities):
-        x = tf.reshape(x, [-1, max_sen_len, self.hidden_size])
+        x = tf.reshape(x, [-1, max_sen_len, self.emb_dim])
         sen_len = tf.reshape(sen_len, [-1])
 
         def lstm(inputs, sequence_length, hidden_size, scope):
@@ -138,6 +138,7 @@ class HUAPA(object):
             self.loss = sce(logits=d_hat, labels=tf.one_hot(input_y, self.cls_cnt))
             lossu = sce(logits=d_hatu, labels=tf.one_hot(input_y, self.cls_cnt))
             lossp = sce(logits=d_hatp, labels=tf.one_hot(input_y, self.cls_cnt))
+            self.teacher_output = tf.nn.softmax(logits=d_hat / 3)
 
             self.loss = self.lambda1 * self.loss + self.lambda2 * lossu + self.lambda3 * lossp
             regularizer = tf.zeros(1)

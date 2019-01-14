@@ -217,7 +217,7 @@ with tf.Graph().as_default():
 
                 # write a checkpoint
                 if flags.check and 'NEW' in info:
-                    save_path = saver.save(sess, 'check_points/', global_step=step[-1])
+                    save_path = saver.save(sess, 'check_points/' + flags.model + '/', global_step=step[-1])
                     print(('Checkpoint saved to ' + save_path))
 
                 output_file.close()

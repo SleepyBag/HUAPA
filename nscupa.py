@@ -58,14 +58,14 @@ class NSCUPA(object):
             logit = self.dnsc(x, max_sen_len, max_doc_len, sen_len, doc_len, identities)
 
             with tf.variable_scope('result'):
-                d_hat = tf.layers.dense(logit, self.cls_cnt,
+                d_hat = tf.layers.dense(tf.concat([logit, usr, prd], axis=1), self.cls_cnt,
                                         kernel_initializer=self.weights_initializer,
                                         bias_initializer=self.biases_initializer)
 
         return d_hat
 
     def dnsc(self, x, max_sen_len, max_doc_len, sen_len, doc_len, identities):
-        x = tf.reshape(x, [-1, max_sen_len, self.hidden_size])
+        x = tf.reshape(x, [-1, max_sen_len, self.emb_dim])
         sen_len = tf.reshape(sen_len, [-1])
 
         def lstm(inputs, sequence_length, hidden_size, scope):
@@ -125,6 +125,7 @@ class NSCUPA(object):
         with tf.variable_scope("loss"):
             sce = tf.nn.softmax_cross_entropy_with_logits_v2
             self.loss = sce(logits=d_hat, labels=tf.one_hot(input_y, self.cls_cnt))
+            self.teacher_output = tf.nn.softmax(logits=d_hat / 3)
 
             regularizer = tf.zeros(1)
             params = tf.trainable_variables()

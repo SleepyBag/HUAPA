@@ -22,6 +22,8 @@ class NSCLA(object):
         self.embedding = args['embedding']
         self.emb_dim = args['emb_dim']
         self.hidden_size = args['hidden_size']
+        self.usr_cnt = args['usr_cnt']
+        self.prd_cnt = args['prd_cnt']
         self.l2_rate = args['l2_rate']
         self.debug = args['debug']
         self.lambda1 = args['lambda1']
@@ -44,10 +46,12 @@ class NSCLA(object):
             self.embeddings = {
                 'wrd_emb': const(self.embedding, name='wrd_emb', dtype=tf.float32),
                 # 'wrd_emb': tf.Variable(self.embedding, name='wrd_emb', dtype=tf.float32),
+                'usr_emb': var('usr_emb', [self.usr_cnt, hsize], self.emb_initializer),
+                'prd_emb': var('prd_emb', [self.prd_cnt, hsize], self.emb_initializer)
             }
 
     def nsc(self, x, max_sen_len, max_doc_len, sen_len, doc_len):
-        x = tf.reshape(x, [-1, max_sen_len, self.hidden_size])
+        x = tf.reshape(x, [-1, max_sen_len, self.emb_dim])
         sen_len = tf.reshape(sen_len, [-1])
 
         def lstm(inputs, sequence_length, hidden_size, scope):
@@ -88,7 +92,7 @@ class NSCLA(object):
         outputs = doc_bkg
 
         with tf.variable_scope('result'):
-            d_hats = tf.layers.dense(outputs, self.cls_cnt,
+            d_hats = tf.layers.dense(tf.concat([outputs, self.usr, self.prd], axis=1), self.cls_cnt,
                                      kernel_initializer=self.weights_initializer,
                                      bias_initializer=self.biases_initializer)
 
@@ -98,11 +102,15 @@ class NSCLA(object):
         # get the inputs
         with tf.variable_scope('inputs'):
             input_map = data_iter.get_next()
-            input_x, input_y, sen_len, doc_len = \
-                (input_map['content'], input_map['rating'],
+            usrid, prdid, input_x, input_y, sen_len, doc_len = \
+                (input_map['usr'], input_map['prd'],
+                 input_map['content'], input_map['rating'],
                  input_map['sen_len'], input_map['doc_len'])
 
+            self.usr = lookup(self.embeddings['usr_emb'], usrid, name='cur_usr_embedding')
+            self.prd = lookup(self.embeddings['prd_emb'], prdid, name='cur_prd_embedding')
             input_x = lookup(self.embeddings['wrd_emb'], input_x, name='cur_wrd_embedding')
+
 
         # build the process of model
         d_hat = self.nsc(input_x, self.max_sen_len, self.max_doc_len, sen_len, doc_len)
