@@ -1,18 +1,81 @@
+from collections import Iterable
 import tensorflow as tf
 from tensorflow import constant as const
 from tensorflow.contrib.layers import xavier_initializer as xavier
 from colored import stylize, fg
 from math import sqrt
 import numpy as np
-from layers.hop import hop
 lookup = tf.nn.embedding_lookup
+
+
+def attention(h, bkg, doc_len, real_max_len,
+              biases_initializer=tf.initializers.zeros(),
+              weights_initializer=tf.contrib.layers.xavier_initializer()):
+    max_len = h.shape[1]
+    hidden_size = h.shape[2]
+    import ipdb; ipdb.set_trace()
+
+    # create variables
+    wh = tf.get_variable('wh', [hidden_size, hidden_size], initializer=weights_initializer)
+    b = tf.get_variable('b', [hidden_size], initializer=biases_initializer)
+    v = tf.get_variable('v', [hidden_size], initializer=biases_initializer)
+    wv = tf.get_variable('wv', [hidden_size, hidden_size], initializer=weights_initializer)
+    v = tf.matmul(bkg[1], wv) + v
+    bkg = bkg[:1]
+
+    h = tf.reshape(h, [-1, hidden_size])
+    h = tf.matmul(h, wh)
+    e = tf.reshape(h + b, [-1, max_len, hidden_size])
+
+    # add influences of background
+    for n, bkgi in enumerate(bkg if isinstance(bkg, Iterable) else [bkg]):
+        wbkg = tf.get_variable('wbkg' + str(n), [hidden_size, hidden_size], initializer=weights_initializer)
+        with tf.variable_scope('attention' + str(n)):
+            e = e + tf.matmul(bkgi, wbkg)[:, None, :]
+
+    e = tf.tanh(e)
+    e = tf.reshape(e, [-1, max_len, hidden_size])
+    e = tf.reduce_sum(e * v[:, None, :], reduction_indices=-1)
+    e = tf.reshape(e, [-1, real_max_len])
+    e = tf.nn.softmax(e, name='attention_with_null_word')
+    mask = tf.sequence_mask(doc_len, real_max_len, dtype=tf.float32)
+    e = (e * mask)[:, None, :]
+    _sum = tf.reduce_sum(e, reduction_indices=2, keepdims=True) + 1e-9
+    e = tf.div(e, _sum, name='attention_without_null_word')
+    # e = tf.reshape(e, [-1, max_doc_len], name='attention_without_null_word')
+
+    return e
+
+
+def hop(scope, last, sentence, sentence_bkg, bkg_iter, bkg_fix,
+        doc_len, real_max_len, convert_flag,
+        biases_initializer=tf.initializers.zeros(),
+        weights_initializer=tf.contrib.layers.xavier_initializer()):
+    if not isinstance(bkg_fix, Iterable):
+        bkg_fix = [bkg_fix]
+    bkg_fix = list(bkg_fix)
+    hidden_size = sentence_bkg.shape[2]
+
+    with tf.variable_scope(scope):
+        sentence = tf.stop_gradient(sentence) \
+            if not last else sentence
+        sentence_bkg = tf.stop_gradient(sentence_bkg) \
+            if not last else sentence_bkg
+        alphas = attention(sentence_bkg, [bkg_iter] + bkg_fix, doc_len, real_max_len,
+                           biases_initializer=biases_initializer,
+                           weights_initializer=weights_initializer)
+        new_bkg = tf.matmul(alphas, sentence)
+        new_bkg = tf.reshape(new_bkg, [-1, hidden_size], name='new_bkg')
+        if 'o' in convert_flag:
+            new_bkg = bkg_iter + new_bkg
+    return new_bkg
 
 
 def var(name, shape, initializer):
     return tf.get_variable(name, shape=shape, initializer=initializer)
 
 
-class HUAPA(object):
+class NSCUPA_DOT(object):
 
     def __init__(self, args):
         self.max_doc_len = args['max_doc_len']
@@ -25,9 +88,6 @@ class HUAPA(object):
         self.prd_cnt = args['prd_cnt']
         self.l2_rate = args['l2_rate']
         self.debug = args['debug']
-        self.lambda1 = args['lambda1']
-        self.lambda2 = args['lambda2']
-        self.lambda3 = args['lambda3']
 
         self.best_dev_acc = .0
         self.best_test_acc = .0
@@ -54,26 +114,18 @@ class HUAPA(object):
             tf.summary.histogram('usr_emb', self.embeddings['usr_emb'])
             tf.summary.histogram('prd_emb', self.embeddings['prd_emb'])
 
-    def huapa(self, x, max_sen_len, max_doc_len, sen_len, doc_len, usr, prd):
-        logits, d_hats = [], []
-        for scope, identities in zip(['user_block', 'product_block'], [[usr], [prd]]):
-            with tf.variable_scope(scope):
-                logit = self.dnsc(x, max_sen_len, max_doc_len, sen_len, doc_len,
-                                  identities)
-                logits.append(logit)
+    def nscupa(self, x, max_sen_len, max_doc_len, sen_len, doc_len, usr, prd):
+        scope = 'nscupa'
+        identities = [usr, prd]
+        with tf.variable_scope(scope):
+            logit = self.dnsc(x, max_sen_len, max_doc_len, sen_len, doc_len, identities)
 
-                with tf.variable_scope('result'):
-                    d_hats.append(tf.layers.dense(logit, self.cls_cnt,
-                                                  kernel_initializer=self.weights_initializer,
-                                                  bias_initializer=self.biases_initializer))
+            with tf.variable_scope('result'):
+                d_hat = tf.layers.dense(tf.concat([logit, usr, prd], axis=1), self.cls_cnt,
+                                        kernel_initializer=self.weights_initializer,
+                                        bias_initializer=self.biases_initializer)
 
-        with tf.variable_scope('result'):
-            logits = tf.concat(logits, axis=1, name='huapa_output')
-            d_hat = tf.layers.dense(logits, self.cls_cnt,
-                                    kernel_initializer=self.weights_initializer,
-                                    bias_initializer=self.biases_initializer)
-
-        return [d_hat] + d_hats
+        return d_hat
 
     def dnsc(self, x, max_sen_len, max_doc_len, sen_len, doc_len, identities):
         x = tf.reshape(x, [-1, max_sen_len, self.emb_dim])
@@ -99,7 +151,7 @@ class HUAPA(object):
 
             sen_bkg = [tf.reshape(tf.tile(bkg[:, None, :], (1, max_doc_len, 1)),
                                   (-1, self.hidden_size)) for bkg in identities]
-            sen_bkg = hop('attention', True, lstm_outputs, lstm_bkg,
+            sen_bkg = hop('hop', True, lstm_outputs, lstm_bkg,
                           sen_bkg[0], sen_bkg[1:], sen_len, max_sen_len, '')
         outputs = tf.reshape(sen_bkg, [-1, max_doc_len, self.hidden_size])
 
@@ -109,7 +161,7 @@ class HUAPA(object):
             lstm_outputs = lstm_bkg
 
             doc_bkg = [i for i in identities]
-            doc_bkg = hop('attention', True, lstm_outputs, lstm_bkg,
+            doc_bkg = hop('hop', True, lstm_outputs, lstm_bkg,
                           doc_bkg[0], doc_bkg[1:], doc_len, max_doc_len, '')
         outputs = doc_bkg
 
@@ -129,24 +181,21 @@ class HUAPA(object):
             input_x = lookup(self.embeddings['wrd_emb'], input_x, name='cur_wrd_embedding')
 
         # build the process of model
-        d_hat, d_hatu, d_hatp = self.huapa(input_x, self.max_sen_len, self.max_doc_len,
-                                           sen_len, doc_len, usr, prd)
+        d_hat = self.nscupa(input_x, self.max_sen_len, self.max_doc_len,
+                            sen_len, doc_len, usr, prd)
         prediction = tf.argmax(d_hat, 1, name='prediction')
 
         with tf.variable_scope("loss"):
             sce = tf.nn.softmax_cross_entropy_with_logits_v2
             self.loss = sce(logits=d_hat, labels=tf.one_hot(input_y, self.cls_cnt))
-            lossu = sce(logits=d_hatu, labels=tf.one_hot(input_y, self.cls_cnt))
-            lossp = sce(logits=d_hatp, labels=tf.one_hot(input_y, self.cls_cnt))
             self.teacher_output = tf.nn.softmax(logits=d_hat / 3)
 
-            self.loss = self.lambda1 * self.loss + self.lambda2 * lossu + self.lambda3 * lossp
             regularizer = tf.zeros(1)
             params = tf.trainable_variables()
             for param in params:
                 if param not in self.embeddings.values():
                     regularizer += tf.nn.l2_loss(param)
-            self.loss = tf.reduce_mean(self.loss) + self.l2_rate * regularizer
+            self.loss = tf.reduce_sum(self.loss) + self.l2_rate * regularizer
 
         with tf.variable_scope("metrics"):
             correct_prediction = tf.equal(prediction, input_y)

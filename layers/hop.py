@@ -12,7 +12,7 @@ def hop(scope, last, sentence, sentence_bkg, bkg_iter, bkg_fix,
     bkg_fix = list(bkg_fix)
     hidden_size = sentence_bkg.shape[2]
 
-    with tf.variable_scope(scope):
+    with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
         sentence = tf.stop_gradient(sentence) \
             if not last else sentence
         sentence_bkg = tf.stop_gradient(sentence_bkg) \
@@ -21,7 +21,7 @@ def hop(scope, last, sentence, sentence_bkg, bkg_iter, bkg_fix,
                            biases_initializer=biases_initializer,
                            weights_initializer=weights_initializer)
         new_bkg = tf.matmul(alphas, sentence)
-        new_bkg = tf.reshape(new_bkg, [-1, hidden_size], name='new_bkg')
+        new_bkg = tf.reshape(new_bkg, [-1, hidden_size])
         if 'o' in convert_flag:
             new_bkg = bkg_iter + new_bkg
     return new_bkg

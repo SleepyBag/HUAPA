@@ -11,14 +11,12 @@ from colored import fg, stylize
 import math
 from tensorflow.python import debug as tf_debug
 
-
 # delete all flags that remained by last run
 def del_all_flags(FLAGS):
     flags_dict = FLAGS._flags()
     keys_list = [keys for keys in flags_dict]
     for keys in keys_list:
         FLAGS.__delattr__(keys)
-
 
 try:
     del_all_flags(tf.flags.FLAGS)

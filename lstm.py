@@ -1,10 +1,12 @@
+
 import tensorflow as tf
 from tensorflow import constant as const
 from tensorflow.contrib.layers import xavier_initializer as xavier
+from layers.attention import attention
+from layers.hop import hop
 from colored import stylize, fg
 from math import sqrt
 import numpy as np
-from layers.hop import hop
 lookup = tf.nn.embedding_lookup
 
 
@@ -12,7 +14,7 @@ def var(name, shape, initializer):
     return tf.get_variable(name, shape=shape, initializer=initializer)
 
 
-class HUAPA(object):
+class NSCLA(object):
 
     def __init__(self, args):
         self.max_doc_len = args['max_doc_len']
@@ -49,33 +51,7 @@ class HUAPA(object):
                 'prd_emb': var('prd_emb', [self.prd_cnt, hsize], self.emb_initializer)
             }
 
-        # for tensorboard
-        if self.debug:
-            tf.summary.histogram('usr_emb', self.embeddings['usr_emb'])
-            tf.summary.histogram('prd_emb', self.embeddings['prd_emb'])
-
-    def huapa(self, x, max_sen_len, max_doc_len, sen_len, doc_len, usr, prd):
-        logits, d_hats = [], []
-        for scope, identities in zip(['user_block', 'product_block'], [[usr], [prd]]):
-            with tf.variable_scope(scope):
-                logit = self.dnsc(x, max_sen_len, max_doc_len, sen_len, doc_len,
-                                  identities)
-                logits.append(logit)
-
-                with tf.variable_scope('result'):
-                    d_hats.append(tf.layers.dense(logit, self.cls_cnt,
-                                                  kernel_initializer=self.weights_initializer,
-                                                  bias_initializer=self.biases_initializer))
-
-        with tf.variable_scope('result'):
-            logits = tf.concat(logits, axis=1, name='huapa_output')
-            d_hat = tf.layers.dense(logits, self.cls_cnt,
-                                    kernel_initializer=self.weights_initializer,
-                                    bias_initializer=self.biases_initializer)
-
-        return [d_hat] + d_hats
-
-    def dnsc(self, x, max_sen_len, max_doc_len, sen_len, doc_len, identities):
+    def nsc(self, x, max_sen_len, max_doc_len, sen_len, doc_len):
         x = tf.reshape(x, [-1, max_sen_len, self.emb_dim])
         sen_len = tf.reshape(sen_len, [-1])
 
@@ -97,10 +73,11 @@ class HUAPA(object):
             lstm_bkg = tf.reshape(lstm_bkg, [-1, max_sen_len, self.hidden_size])
             lstm_outputs = lstm_bkg
 
-            sen_bkg = [tf.reshape(tf.tile(bkg[:, None, :], (1, max_doc_len, 1)),
-                                  (-1, self.hidden_size)) for bkg in identities]
-            sen_bkg = hop('attention', True, lstm_outputs, lstm_bkg,
-                          sen_bkg[0], sen_bkg[1:], sen_len, max_sen_len, '')
+            alphas = attention(lstm_bkg, [], sen_len, max_sen_len,
+                               biases_initializer=self.biases_initializer,
+                               weights_initializer=self.weights_initializer)
+            sen_bkg = tf.matmul(alphas, lstm_outputs)
+            sen_bkg = tf.reshape(sen_bkg, [-1, self.hidden_size], name='new_bkg')
         outputs = tf.reshape(sen_bkg, [-1, max_doc_len, self.hidden_size])
 
         with tf.variable_scope('document_layer'):
@@ -108,12 +85,19 @@ class HUAPA(object):
             lstm_bkg, _state = lstm(outputs, doc_len, self.hidden_size, 'lstm_bkg')
             lstm_outputs = lstm_bkg
 
-            doc_bkg = [i for i in identities]
-            doc_bkg = hop('attention', True, lstm_outputs, lstm_bkg,
-                          doc_bkg[0], doc_bkg[1:], doc_len, max_doc_len, '')
+            alphas = attention(lstm_bkg, [], doc_len, max_doc_len,
+                               biases_initializer=self.biases_initializer,
+                               weights_initializer=self.weights_initializer)
+            doc_bkg = tf.matmul(alphas, lstm_outputs)
+            doc_bkg = tf.reshape(doc_bkg, [-1, self.hidden_size], name='new_bkg')
         outputs = doc_bkg
 
-        return outputs
+        with tf.variable_scope('result'):
+            d_hats = tf.layers.dense(tf.concat([outputs, self.usr, self.prd], axis=1), self.cls_cnt,
+                                     kernel_initializer=self.weights_initializer,
+                                     bias_initializer=self.biases_initializer)
+
+        return d_hats
 
     def build(self, data_iter):
         # get the inputs
@@ -124,30 +108,27 @@ class HUAPA(object):
                  input_map['content'], input_map['rating'],
                  input_map['sen_len'], input_map['doc_len'])
 
-            usr = lookup(self.embeddings['usr_emb'], usrid, name='cur_usr_embedding')
-            prd = lookup(self.embeddings['prd_emb'], prdid, name='cur_prd_embedding')
+            self.usr = lookup(self.embeddings['usr_emb'], usrid, name='cur_usr_embedding')
+            self.prd = lookup(self.embeddings['prd_emb'], prdid, name='cur_prd_embedding')
             input_x = lookup(self.embeddings['wrd_emb'], input_x, name='cur_wrd_embedding')
 
+
         # build the process of model
-        d_hat, d_hatu, d_hatp = self.huapa(input_x, self.max_sen_len, self.max_doc_len,
-                                           sen_len, doc_len, usr, prd)
+        d_hat = self.nsc(input_x, self.max_sen_len, self.max_doc_len, sen_len, doc_len)
         prediction = tf.argmax(d_hat, 1, name='prediction')
 
         with tf.variable_scope("loss"):
             sce = tf.nn.softmax_cross_entropy_with_logits_v2
             self.loss = sce(logits=d_hat, labels=tf.one_hot(input_y, self.cls_cnt))
-            lossu = sce(logits=d_hatu, labels=tf.one_hot(input_y, self.cls_cnt))
-            lossp = sce(logits=d_hatp, labels=tf.one_hot(input_y, self.cls_cnt))
-            self.teacher_output = tf.nn.softmax(logits=d_hat / 3)
 
-            self.loss = self.lambda1 * self.loss + self.lambda2 * lossu + self.lambda3 * lossp
             regularizer = tf.zeros(1)
             params = tf.trainable_variables()
             for param in params:
                 if param not in self.embeddings.values():
                     regularizer += tf.nn.l2_loss(param)
-            self.loss = tf.reduce_mean(self.loss) + self.l2_rate * regularizer
+            self.loss = tf.reduce_sum(self.loss) + self.l2_rate * regularizer
 
+        prediction = tf.argmax(d_hat, 1, name='prediction')
         with tf.variable_scope("metrics"):
             correct_prediction = tf.equal(prediction, input_y)
             mse = tf.reduce_sum(tf.square(prediction - input_y), name="mse")

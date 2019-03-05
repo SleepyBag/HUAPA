@@ -1,9 +1,9 @@
-import pandas as pd
-import tensorflow as tf
-from functools import partial
-import numpy as np
 import os
 import csv
+from functools import partial
+import pandas as pd
+import tensorflow as tf
+import numpy as np
 import word2vec as w2v
 
 
@@ -11,14 +11,20 @@ reading_col_name = ['usr', 'prd', 'rating', 'content']
 output_col_name = ['usr', 'prd', 'rating', 'content', 'doc_len', 'sen_len']
 
 
-def build_dataset(filenames, tfrecords_filenames, stats_filename, embedding_filename,
-                  max_doc_len, max_sen_len, hierarchy, emb_dim, text_filename):
+def build_dataset(filenames, tfrecords_filenames, stats_filename, embedding_filename, user_embedding_filename,
+                  max_doc_len, max_sen_len, split_by_period, emb_dim, text_filename, drop):
     datasets = []
     if not os.path.exists(embedding_filename):
-        w2v.word2vec(text_filename, embedding_filename, size=emb_dim, binary=0, cbow=0, verbose=True)
+        w2v.word2vec(text_filename, embedding_filename, size=emb_dim, binary=0, verbose=True)
+        #  os.system('vim ' + embedding_filename + ' +%s/ $//g +wqall')
     wrd_dict, wrd_index, embedding = load_embedding(embedding_filename, emb_dim)
+    user_embedding = None
+    if user_embedding_filename != '':
+        _, _, user_embedding = load_embedding(user_embedding_filename, emb_dim)
 
-    tfrecords_filenames = [i + str(hierarchy) + str(max_doc_len) + str(max_sen_len) for i in tfrecords_filenames]
+    tfrecords_filenames = [i + str(split_by_period) +
+                           str(max_doc_len) + str(max_sen_len) + str(drop) 
+                           for i in tfrecords_filenames]
     stats = {}
     if sum([os.path.exists(i) for i in tfrecords_filenames]) < len(tfrecords_filenames) \
             or not os.path.exists(stats_filename):
@@ -28,8 +34,23 @@ def build_dataset(filenames, tfrecords_filenames, stats_filename, embedding_file
         if os.path.exists(stats_filename):
             os.remove(stats_filename)
         # read the data and transform them
-        data_frames, stats['usr_cnt'], stats['prd_cnt'] = \
-            read_files(filenames, wrd_index, max_doc_len, max_sen_len, hierarchy)
+
+        data_frames = [pd.read_csv(filename, sep='\t\t', names=reading_col_name, engine='python')
+                       for filename in filenames]
+        total_data = pd.concat(data_frames)
+        usr = total_data.usr.unique().tolist()
+        usr.sort()
+        usr_index = {name: index for index, name in enumerate(usr)}
+        prd = total_data.prd.unique().tolist()
+        prd.sort()
+        prd_index = {name: index for index, name in enumerate(prd)}
+
+        stats['usr_cnt'] = len(usr)
+        stats['prd_cnt'] = len(prd)
+
+        data_frames[0] = data_process(data_frames[0], wrd_index, usr_index, prd_index, max_doc_len, max_sen_len, split_by_period, drop)
+        data_frames[1] = data_process(data_frames[1], wrd_index, usr_index, prd_index, max_doc_len, max_sen_len, split_by_period, .0)
+        data_frames[2] = data_process(data_frames[2], wrd_index, usr_index, prd_index, max_doc_len, max_sen_len, split_by_period, .0)
 
         # build the dataset
         for filename, tfrecords_filename, data_frame in zip(filenames, tfrecords_filenames, data_frames):
@@ -84,22 +105,30 @@ def build_dataset(filenames, tfrecords_filenames, stats_filename, embedding_file
         datasets.append(dataset)
 
     lengths = [stats[filename + 'len'] for filename in filenames]
-    return datasets, lengths, embedding.values, stats['usr_cnt'], stats['prd_cnt'], wrd_dict
+    if user_embedding is not None:
+        return datasets, lengths, embedding.values, user_embedding.values, stats['usr_cnt'], stats['prd_cnt'], wrd_dict
+    else:
+        return datasets, lengths, embedding.values, None, stats['usr_cnt'], stats['prd_cnt'], wrd_dict
 
 
 # load an embedding file
 def load_embedding(filename, emb_dim):
-    emb_col_name = ['wrd'] + [i for i in range(emb_dim)]
-    data_frame = pd.read_csv(filename, sep=' ', header=0, names=emb_col_name)
-    embedding = data_frame[emb_col_name[1:]]
+    try:
+        emb_col_name = ['wrd'] + [i for i in range(emb_dim + 1)]
+        data_frame = pd.read_csv(filename, sep=' ', header=0, names=emb_col_name)
+    except pd.errors.ParserError:
+        emb_col_name = ['wrd'] + [i for i in range(emb_dim)]
+        data_frame = pd.read_csv(filename, sep=' ', header=0, names=emb_col_name)
+    data_frame = data_frame.sort_values('wrd')
+    embedding = data_frame[emb_col_name[1: emb_dim + 1]]
     wrd_dict = data_frame['wrd'].tolist()
     wrd_index = {s: i for i, s in enumerate(wrd_dict)}
     return wrd_dict, wrd_index, embedding
 
 
 # transform a sentence into indices
-def sentence_transform(document, wrd_index, max_doc_len, max_sen_len, hierarchy):
-    if hierarchy:
+def sentence_transform(document, wrd_index, max_doc_len, max_sen_len, split_by_period):
+    if split_by_period:
         sentence_index = np.zeros((max_doc_len, max_sen_len), dtype=np.int)
         for i, sentence in enumerate(document):
             if i >= max_doc_len:
@@ -124,8 +153,8 @@ def sentence_transform(document, wrd_index, max_doc_len, max_sen_len, hierarchy)
     return sentence_index
 
 
-def split_paragraph(paragraph, hierarchy):
-    if hierarchy:
+def split_paragraph(paragraph, split_by_period):
+    if split_by_period:
         sentences = paragraph.split('<sssss>')
         for i, _ in enumerate(sentences):
             sentences[i] = sentences[i].split()
@@ -134,39 +163,69 @@ def split_paragraph(paragraph, hierarchy):
     return sentences
 
 
-def read_files(filenames, wrd_index, max_doc_len, max_sen_len, hierarchy):
-    data_frames = [pd.read_csv(filename, sep='\t\t', names=reading_col_name, engine='python')
-                   for filename in filenames]
-    print('Data frame loaded.')
+#  def read_files(filenames, wrd_index, usr_index, max_doc_len, max_sen_len, hierarchy, drop):
+#      print('Data frame loaded.')
+#
+#      # count contents' length
+#      for i, df in enumerate(data_frames):
+#          df['content'] = df['content'].transform(partial(split_paragraph, hierarchy=hierarchy))
+#          if i == 0:
+#              df['rating'] = df['rating'].apply(lambda x: x * np.random.choice([0, 1], p=[drop, 1 - drop]))
+#              df = df[df['rating'].isin(range(1, 100))]
+#          df['rating'] = df['rating'] - 1
+#          data_frames[i] = df
+#          # df['max_sen_len'] = df['sen_len'].transform(lambda sen_len: max(sen_len))
+#
+#      # max_doc_len = total_data['doc_len'].max()
+#      # max_sen_len = total_data['max_sen_len'].max()
+#      print('Length counted')
+#
+#      # transform users and products to indices
+#      if usr_index is None:
+#          usr = total_data['usr'].unique().tolist()
+#          usr.sort()
+#          usr = {name: index for index, name in enumerate(usr)}
+#      else:
+#          usr = usr_index
+#      prd = total_data['prd'].unique().tolist()
+#      prd.sort()
+#      prd = {name: index for index, name in enumerate(prd)}
+#      for df in data_frames:
+#          df['usr'] = df['usr'].map(usr)
+#          df['prd'] = df['prd'].map(prd)
+#      print('Users and products indexed.')
+#
+#      # transform contents into indices
+#      for df in data_frames:
+#          df['content'] = df['content'].transform(
+#              partial(sentence_transform, wrd_index=wrd_index, max_doc_len=max_doc_len,
+#                      max_sen_len=max_sen_len, hierarchy=hierarchy))
+#          df['sen_len'] = df['content'].transform(lambda i: np.count_nonzero(i, axis=1))
+#          df['doc_len'] = df['sen_len'].transform(lambda i: np.count_nonzero(i))
+#      print('Contents indexed.')
+#
+#      return data_frames, len(usr), len(prd)
 
+def data_process(df, wrd_index, usr_index, prd_index, max_doc_len, max_sen_len, split_by_period, drop):
     # count contents' length
-    for df in data_frames:
-        df['content'] = df['content'].transform(partial(split_paragraph, hierarchy=hierarchy))
-        df['rating'] = df['rating'] - 1
-        # df['max_sen_len'] = df['sen_len'].transform(lambda sen_len: max(sen_len))
-
-    total_data = pd.concat(data_frames)
-    # max_doc_len = total_data['doc_len'].max()
-    # max_sen_len = total_data['max_sen_len'].max()
-    print('Length counted')
+    df.content = df.content.transform(partial(split_paragraph, split_by_period=split_by_period))
+    if drop != 0.:
+        df.rating = df.rating.apply(lambda x: x * np.random.choice([0, 1], p=[drop, 1 - drop]))
+        df = df[df.rating.isin(range(1, 100))]
+    df.rating = df.rating - 1
+    # df['max_sen_len'] = df['sen_len'].transform(lambda sen_len: max(sen_len))
 
     # transform users and products to indices
-    usr = total_data['usr'].unique().tolist()
-    usr = {name: index for index, name in enumerate(usr)}
-    prd = total_data['prd'].unique().tolist()
-    prd = {name: index for index, name in enumerate(prd)}
-    for df in data_frames:
-        df['usr'] = df['usr'].map(usr)
-        df['prd'] = df['prd'].map(prd)
+    df.usr = df.usr.map(usr_index)
+    df.prd = df.prd.map(prd_index)
     print('Users and products indexed.')
 
     # transform contents into indices
-    for df in data_frames:
-        df['content'] = df['content'].transform(
-            partial(sentence_transform, wrd_index=wrd_index, max_doc_len=max_doc_len,
-                    max_sen_len=max_sen_len, hierarchy=hierarchy))
-        df['sen_len'] = df['content'].transform(lambda i: np.count_nonzero(i, axis=1))
-        df['doc_len'] = df['sen_len'].transform(lambda i: np.count_nonzero(i))
+    df.content = df.content.transform(
+        partial(sentence_transform, wrd_index=wrd_index, max_doc_len=max_doc_len,
+                max_sen_len=max_sen_len, split_by_period=split_by_period))
+    df['sen_len'] = df.content.transform(lambda i: np.count_nonzero(i, axis=1))
+    df['doc_len'] = df.sen_len.transform(lambda i: np.count_nonzero(i))
     print('Contents indexed.')
 
-    return data_frames, len(usr), len(prd)
+    return df

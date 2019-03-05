@@ -2,14 +2,18 @@ from collections import Iterable
 import tensorflow as tf
 
 
-def attention(h, bkg, doc_len, real_max_len,
+def attention(h,
+              bkg,
+              doc_len,
+              real_max_len,
               biases_initializer=tf.initializers.zeros(),
               weights_initializer=tf.contrib.layers.xavier_initializer()):
     max_len = h.shape[1]
     hidden_size = h.shape[2]
 
     # create variables
-    wh = tf.get_variable('wh', [hidden_size, hidden_size], initializer=weights_initializer)
+    wh = tf.get_variable(
+        'wh', [hidden_size, hidden_size], initializer=weights_initializer)
     b = tf.get_variable('b', [hidden_size], initializer=biases_initializer)
     v = tf.get_variable('v', [hidden_size, 1], initializer=biases_initializer)
 
@@ -19,7 +23,9 @@ def attention(h, bkg, doc_len, real_max_len,
 
     # add influences of background
     for n, bkgi in enumerate(bkg if isinstance(bkg, Iterable) else [bkg]):
-        wbkg = tf.get_variable('wbkg' + str(n), [hidden_size, hidden_size], initializer=weights_initializer)
+        wbkg = tf.get_variable(
+            'wbkg' + str(n) + str(bkgi.shape[1]), [bkgi.shape[1], hidden_size],
+            initializer=weights_initializer)
         with tf.variable_scope('attention' + str(n)):
             e = e + tf.matmul(bkgi, wbkg)[:, None, :]
 
