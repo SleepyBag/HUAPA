@@ -2,8 +2,6 @@
 # author: Xue Qianming
 import os
 import time
-import pickle
-import numpy as np
 import tensorflow as tf
 from tqdm import tqdm
 import data
@@ -52,7 +50,7 @@ params = {
      ("split", True,
       "whether to split the document by sentences or fixed length")],
     'training_params': [("batch_size", 100, "Batch Size"),
-                        ("epoch_cnt", 50, "Number of training epochs"),
+                        ("epoch_cnt", 10, "Number of training epochs"),
                         ("checkpoint", '', "checkpoint to restore params"),
                         ("training_method", 'adam',
                          'Method chose to tune the weights')],

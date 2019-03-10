@@ -58,7 +58,7 @@ class NSCUPA(object):
             logit = self.dnsc(x, max_sen_len, max_doc_len, sen_len, doc_len, identities)
 
             with tf.variable_scope('result'):
-                d_hat = tf.layers.dense(tf.concat([logit, usr, prd], axis=1), self.cls_cnt,
+                d_hat = tf.layers.dense(logit, self.cls_cnt,
                                         kernel_initializer=self.weights_initializer,
                                         bias_initializer=self.biases_initializer)
 

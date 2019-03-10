@@ -43,8 +43,8 @@ class AUGMENTED_DHUAPA_MUTUAL(object):
         with tf.variable_scope('emb'):
             self.embeddings = {
                 'wrd_emb':
-                const(self.embedding, name='wrd_emb', dtype=tf.float32),
-                #  'wrd_emb': tf.Variable(self.embedding, name='wrd_emb', dtype=tf.float32),
+                #  const(self.embedding, name='wrd_emb', dtype=tf.float32),
+                tf.Variable(self.embedding, name='wrd_emb', dtype=tf.float32),
                 'usr_emb':
                 var('usr_emb', [self.usr_cnt, self.emb_dim],
                     self.emb_initializer),
@@ -76,22 +76,33 @@ class AUGMENTED_DHUAPA_MUTUAL(object):
 
             nscua_input_x, nscpa_input_x = input_x, input_x
             # padding content with user embedding
-            tiled_usr = tf.tile(usr[:, None, None, :],
+            tiled_usr = tf.layers.dense(
+                usr,
+                self.emb_dim,
+                use_bias=False,
+                kernel_initializer=self.weights_initializer,
+                bias_initializer=self.biases_initializer)
+            tiled_prd = tf.layers.dense(
+                prd,
+                self.emb_dim,
+                use_bias=False,
+                kernel_initializer=self.weights_initializer,
+                bias_initializer=self.biases_initializer)
+            tiled_usr = tf.tile(tiled_usr[:, None, None, :],
                                 [1, self.max_doc_len, 1, 1])
-            tiled_prd = tf.tile(prd[:, None, None, :],
+            tiled_prd = tf.tile(tiled_prd[:, None, None, :],
                                 [1, self.max_doc_len, 1, 1])
             nscua_input_x = tf.reshape(
                 input_x,
                 [-1, self.max_doc_len, self.max_sen_len, self.emb_dim])
-            nscua_input_x = tf.concat([tiled_usr, nscua_input_x, tiled_usr],
-                                      axis=2)
+            nscua_input_x = tf.concat([tiled_usr, nscua_input_x], axis=2)
             nscpa_input_x = tf.reshape(
                 input_x,
                 [-1, self.max_doc_len, self.max_sen_len, self.emb_dim])
-            nscpa_input_x = tf.concat([tiled_prd, nscpa_input_x, tiled_prd],
-                                      axis=2)
-            sen_len = sen_len + 2
-            self.max_sen_len += 2
+            nscpa_input_x = tf.concat([tiled_prd, nscpa_input_x], axis=2)
+            sen_len = tf.where(
+                tf.equal(sen_len, 0), tf.zeros_like(sen_len), sen_len + 1)
+            self.max_sen_len += 1
             nscua_input_x = tf.reshape(nscua_input_x,
                                        [-1, self.max_sen_len, self.emb_dim])
             nscpa_input_x = tf.reshape(nscpa_input_x,
@@ -99,6 +110,14 @@ class AUGMENTED_DHUAPA_MUTUAL(object):
 
         # build the process of model
         sen_embs, doc_embs, logits = [], [], []
+        sen_cell_fw = tf.nn.rnn_cell.LSTMCell(
+            self.hidden_size // 2,
+            forget_bias=0.,
+            initializer=self.weights_initializer)
+        sen_cell_bw = tf.nn.rnn_cell.LSTMCell(
+            self.hidden_size // 2,
+            forget_bias=0.,
+            initializer=self.weights_initializer)
         for scope, identities, input_x in zip(['user_block', 'product_block'],
                                               [[usr], [prd]],
                                               [nscua_input_x, nscpa_input_x]):
@@ -113,16 +132,39 @@ class AUGMENTED_DHUAPA_MUTUAL(object):
                         self.hidden_size,
                         self.emb_dim,
                         self.sen_hop_cnt,
-                        bidirectional_lstm=True))
+                        bidirectional_lstm=True,
+                        lstm_cells=[sen_cell_fw, sen_cell_bw]))
 
         sen_embs = tf.concat(sen_embs, axis=-1)
-        nscua_sen_embs = tf.concat(
-            [usr[:, None, :], sen_embs, usr[:, None, :]], axis=1)
-        nscpa_sen_embs = tf.concat(
-            [prd[:, None, :], sen_embs, prd[:, None, :]], axis=1)
-        self.max_doc_len += 2
-        doc_len = doc_len + 2
 
+        nscua_sen_embs, nscpa_sen_embs = sen_embs, sen_embs
+        # padding doc with user and product embeddings
+        doc_aug_usr = tf.layers.dense(
+            usr,
+            self.emb_dim,
+            use_bias=False,
+            kernel_initializer=self.weights_initializer,
+            bias_initializer=self.biases_initializer)
+        doc_aug_prd = tf.layers.dense(
+            prd,
+            self.emb_dim,
+            use_bias=False,
+            kernel_initializer=self.weights_initializer,
+            bias_initializer=self.biases_initializer)
+        nscua_sen_embs = tf.concat([doc_aug_usr[:, None, :], nscua_sen_embs], axis=1)
+        nscpa_sen_embs = tf.concat([doc_aug_prd[:, None, :], nscpa_sen_embs], axis=1)
+        #  none_sen_embs = tf.pad(sen_embs, [[0, 0], [1, 0], [0, 0]])
+        self.max_doc_len += 1
+        doc_len = doc_len + 1
+
+        doc_cell_fw = tf.nn.rnn_cell.LSTMCell(
+            self.hidden_size // 2,
+            forget_bias=0.,
+            initializer=self.weights_initializer)
+        doc_cell_bw = tf.nn.rnn_cell.LSTMCell(
+            self.hidden_size // 2,
+            forget_bias=0.,
+            initializer=self.weights_initializer)
         for scope, identities, input_x in zip(
                 ['user_block', 'product_block'], [[usr], [prd]],
                 [nscua_sen_embs, nscpa_sen_embs]):
@@ -134,7 +176,8 @@ class AUGMENTED_DHUAPA_MUTUAL(object):
                     identities,
                     self.hidden_size,
                     self.doc_hop_cnt,
-                    bidirectional_lstm=True)
+                    bidirectional_lstm=True,
+                    lstm_cells=[doc_cell_fw, doc_cell_bw])
                 doc_embs.append(doc_emb)
 
                 with tf.variable_scope('result'):
@@ -218,9 +261,9 @@ class AUGMENTED_DHUAPA_MUTUAL(object):
         capped_grads_and_vars = []
 
         for grad, v in grads_and_vars:
-            #  if var is self.embeddings['wrd_emb'] or var is self.embeddings['usr_emb']:
-            #      grad = tf.IndexedSlices(grad.values * self.embedding_lr,
-            #                              grad.indices, grad.dense_shape)
+            if v is self.embeddings['wrd_emb']:
+                grad = tf.IndexedSlices(grad.values * self.embedding_lr,
+                                        grad.indices, grad.dense_shape)
             capped_grads_and_vars.append((grad, v))
 
         train_op = optimizer.apply_gradients(

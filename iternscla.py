@@ -13,7 +13,7 @@ def var(name, shape, initializer):
     return tf.get_variable(name, shape=shape, initializer=initializer)
 
 
-class NSCLA(object):
+class ITERNSCLA(object):
     def __init__(self, args):
         self.max_doc_len = args['max_doc_len']
         self.max_sen_len = args['max_sen_len']
@@ -79,16 +79,25 @@ class NSCLA(object):
                                   [-1, max_sen_len, self.hidden_size])
             lstm_outputs = lstm_bkg
 
-            alphas = attention(
-                lstm_bkg, [],
-                sen_len,
-                max_sen_len,
-                biases_initializer=self.biases_initializer,
-                weights_initializer=self.weights_initializer)
-            sen_bkg = tf.matmul(alphas, lstm_outputs)
+            sen_bkg = []
+            sen_iter_cnt = 2
+            for i in range(sen_iter_cnt):
+                with tf.variable_scope('attention', reuse=tf.AUTO_REUSE):
+                    alphas = attention(
+                        lstm_bkg,
+                        sen_bkg,
+                        sen_len,
+                        max_sen_len,
+                        biases_initializer=self.biases_initializer,
+                        weights_initializer=self.weights_initializer)
+                    sen_emb = tf.matmul(alphas, lstm_outputs)
+                    sen_emb = tf.reshape(sen_emb, [-1, self.hidden_size])
+                    sen_bkg.append(sen_emb)
+            sen_bkg = tf.concat(sen_bkg, axis=-1)
             sen_bkg = tf.reshape(
-                sen_bkg, [-1, self.hidden_size], name='new_bkg')
-        outputs = tf.reshape(sen_bkg, [-1, max_doc_len, self.hidden_size])
+                sen_bkg, [-1, self.hidden_size * sen_iter_cnt], name='new_bkg')
+        outputs = tf.reshape(
+            sen_bkg, [-1, max_doc_len, self.hidden_size * sen_iter_cnt])
 
         with tf.variable_scope('document_layer'):
             # lstm_outputs, _state = lstm(outputs, doc_len, self.hidden_size, 'lstm')
@@ -96,15 +105,24 @@ class NSCLA(object):
                                     'lstm_bkg')
             lstm_outputs = lstm_bkg
 
-            alphas = attention(
-                lstm_bkg, [],
-                doc_len,
-                max_doc_len,
-                biases_initializer=self.biases_initializer,
-                weights_initializer=self.weights_initializer)
-            doc_bkg = tf.matmul(alphas, lstm_outputs)
+            doc_bkg = []
+            doc_iter_cnt = 3
+            for i in range(doc_iter_cnt):
+                with tf.variable_scope(
+                        'attention' + str(i), reuse=tf.AUTO_REUSE):
+                    alphas = attention(
+                        lstm_bkg,
+                        doc_bkg,
+                        doc_len,
+                        max_doc_len,
+                        biases_initializer=self.biases_initializer,
+                        weights_initializer=self.weights_initializer)
+                    doc_emb = tf.matmul(alphas, lstm_outputs)
+                    doc_emb = tf.reshape(doc_emb, [-1, self.hidden_size])
+                    doc_bkg.append(doc_emb)
+            doc_bkg = tf.concat(doc_bkg, axis=-1)
             doc_bkg = tf.reshape(
-                doc_bkg, [-1, self.hidden_size], name='new_bkg')
+                doc_bkg, [-1, self.hidden_size * doc_iter_cnt], name='new_bkg')
         outputs = doc_bkg
 
         with tf.variable_scope('result'):
@@ -125,9 +143,9 @@ class NSCLA(object):
                  input_map['content'], input_map['rating'],
                  input_map['sen_len'], input_map['doc_len'])
 
-            self.usr = lookup(
+            self._usr = lookup(
                 self.embeddings['usr_emb'], usrid, name='cur_usr_embedding')
-            self.prd = lookup(
+            self._prd = lookup(
                 self.embeddings['prd_emb'], prdid, name='cur_prd_embedding')
             input_x = lookup(
                 self.embeddings['wrd_emb'], input_x, name='cur_wrd_embedding')

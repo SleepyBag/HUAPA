@@ -12,10 +12,12 @@ def nsc_sentence_layer(x,
                        hidden_size,
                        emb_dim,
                        sen_hop_cnt=1,
-                       bidirectional_lstm=True):
+                       bidirectional_lstm=True,
+                       lstm_cells=None):
     x = tf.reshape(x, [-1, max_sen_len, x.shape[-1]])
     sen_len = tf.reshape(sen_len, [-1])
 
+    outputs = []
     with tf.variable_scope('sentence_layer'):
         # lstm_outputs, _state = lstm(x, sen_len, hidden_size, 'lstm')
         # lstm_outputs = tf.reshape(lstm_outputs, [-1, max_sen_len, hidden_size])
@@ -24,7 +26,8 @@ def nsc_sentence_layer(x,
             sen_len,
             hidden_size,
             'lstm_bkg',
-            bidirectional=bidirectional_lstm)
+            bidirectional=bidirectional_lstm,
+            lstm_cells=lstm_cells)
         lstm_bkg = tf.reshape(lstm_bkg, [-1, max_sen_len, hidden_size])
         lstm_outputs = lstm_bkg
 
@@ -34,9 +37,16 @@ def nsc_sentence_layer(x,
             for bkg in identities
         ]
         for ihop in range(sen_hop_cnt):
-            last = ihop == sen_hop_cnt - 1
-            sen_bkg[0] = hop('hop', last, lstm_outputs, lstm_bkg, sen_bkg[0],
-                             sen_bkg[1:], sen_len, max_sen_len, '')
-    outputs = tf.reshape(sen_bkg[0], [-1, max_doc_len, hidden_size])
+            if sen_bkg:
+                sen_bkg[0] = hop('hop', lstm_outputs, lstm_bkg, sen_bkg[0],
+                                 sen_bkg[1:], sen_len, max_sen_len, '')
+                output = sen_bkg[0]
+            else:
+                output = hop('hop', lstm_outputs, lstm_bkg, None, None,
+                             sen_len, max_sen_len, '')
+            outputs.append(output)
+        #  outputs = tf.concat(outputs, axis=-1)
+        #  outputs = tf.layers.dense(outputs, hidden_size, use_bias=False)
+        outputs = tf.reshape(output, [-1, max_doc_len, hidden_size])
 
     return outputs
