@@ -2,10 +2,7 @@ import tensorflow as tf
 from tensorflow import constant as const
 from tensorflow.contrib.layers import xavier_initializer as xavier
 from layers.attention import attention
-from layers.hop import hop
-from colored import stylize, fg
 from math import sqrt
-import numpy as np
 lookup = tf.nn.embedding_lookup
 
 

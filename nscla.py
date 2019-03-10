@@ -2,10 +2,7 @@ import tensorflow as tf
 from tensorflow import constant as const
 from tensorflow.contrib.layers import xavier_initializer as xavier
 from layers.attention import attention
-from layers.hop import hop
-from colored import stylize, fg
 from math import sqrt
-import numpy as np
 lookup = tf.nn.embedding_lookup
 
 
@@ -162,13 +159,13 @@ class NSCLA(object):
         return self.loss, mse, correct_num, accuracy
 
     def output_metrics(self, metrics, data_length):
-        loss, mse, correct_num, accuracy = metrics
+        loss, mse, correct_num, _accuracy = metrics
         info = 'Loss = %.3f, RMSE = %.3f, Acc = %.3f' % \
             (loss / data_length, sqrt(float(mse) / data_length), float(correct_num) / data_length)
         return info
 
     def record_metrics(self, dev_metrics, test_metrics, devlen, testlen):
-        _dev_loss, dev_mse, dev_correct_num, dev_accuracy = dev_metrics
+        _dev_loss, _dev_mse, dev_correct_num, dev_accuracy = dev_metrics
         _test_loss, test_mse, test_correct_num, test_accuracy = test_metrics
         dev_accuracy = float(dev_correct_num) / devlen
         test_accuracy = float(test_correct_num) / testlen
