@@ -242,7 +242,7 @@ def run_set(sess, testlen, metrics, ops=tuple()):
     pgb = tqdm(
         list(range(int(math.ceil(float(testlen) / flags.batch_size)))),
         leave=False,
-        ncols=50)
+        dynamic_ncols=True)
     metrics_total = [0] * len(metrics)
     op_results = [[] for i in ops]
     for i in pgb:

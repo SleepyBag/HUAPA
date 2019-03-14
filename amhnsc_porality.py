@@ -10,7 +10,7 @@ def var(name, shape, initializer):
     return tf.get_variable(name, shape=shape, initializer=initializer)
 
 
-class AUGMENTED_DHUAPA_MUTUAL(object):
+class AMHNSC_PORALITY(object):
     def __init__(self, args):
         self.max_doc_len = args['max_doc_len']
         self.max_sen_len = args['max_sen_len']
@@ -45,6 +45,9 @@ class AUGMENTED_DHUAPA_MUTUAL(object):
                 'wrd_emb':
                 const(self.embedding, name='wrd_emb', dtype=tf.float32),
                 #  tf.Variable(self.embedding, name='wrd_emb', dtype=tf.float32),
+                'polarity_emb':
+                #  const(self.embedding, name='wrd_emb', dtype=tf.float32),
+                var('polarity_emb', [10, self.emb_dim], self.emb_initializer),
                 'usr_emb':
                 var('usr_emb', [self.usr_cnt, self.emb_dim],
                     self.emb_initializer),
@@ -62,10 +65,11 @@ class AUGMENTED_DHUAPA_MUTUAL(object):
         # get the inputs
         with tf.variable_scope('inputs'):
             input_map = data_iter.get_next()
-            usrid, prdid, input_x, input_y, sen_len, doc_len = \
+            usrid, prdid, input_x, input_y, sen_len, doc_len, polarity = \
                 (input_map['usr'], input_map['prd'],
                  input_map['content'], input_map['rating'],
-                 input_map['sen_len'], input_map['doc_len'])
+                 input_map['sen_len'], input_map['doc_len'],
+                 input_map['polarity'])
 
             usr = lookup(
                 self.embeddings['usr_emb'], usrid, name='cur_usr_embedding')
@@ -73,6 +77,15 @@ class AUGMENTED_DHUAPA_MUTUAL(object):
                 self.embeddings['prd_emb'], prdid, name='cur_prd_embedding')
             input_x = lookup(
                 self.embeddings['wrd_emb'], input_x, name='cur_wrd_embedding')
+            polarity_emb = lookup(
+                self.embeddings['polarity_emb'],
+                polarity,
+                name='cur_polarity_embedding')
+            polarity_emb = tf.where(
+                tf.tile(
+                    tf.equal(polarity, 100)[:, :, None], [1, 1, self.emb_dim]),
+                tf.zeros_like(polarity_emb), polarity_emb)
+            input_x = input_x + polarity_emb
 
             nscua_input_x, nscpa_input_x = input_x, input_x
 
@@ -152,8 +165,10 @@ class AUGMENTED_DHUAPA_MUTUAL(object):
             use_bias=False,
             kernel_initializer=self.weights_initializer,
             bias_initializer=self.biases_initializer)
-        nscua_sen_embs = tf.concat([doc_aug_usr[:, None, :], nscua_sen_embs], axis=1)
-        nscpa_sen_embs = tf.concat([doc_aug_prd[:, None, :], nscpa_sen_embs], axis=1)
+        nscua_sen_embs = tf.concat([doc_aug_usr[:, None, :], nscua_sen_embs],
+                                   axis=1)
+        nscpa_sen_embs = tf.concat([doc_aug_prd[:, None, :], nscpa_sen_embs],
+                                   axis=1)
         #  none_sen_embs = tf.pad(sen_embs, [[0, 0], [1, 0], [0, 0]])
         self.max_doc_len += 1
         doc_len = doc_len + 1
