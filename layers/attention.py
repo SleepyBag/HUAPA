@@ -7,7 +7,8 @@ def attention(h,
               doc_len,
               real_max_len,
               biases_initializer=tf.initializers.zeros(),
-              weights_initializer=tf.contrib.layers.xavier_initializer()):
+              weights_initializer=tf.contrib.layers.xavier_initializer(),
+              auged=False):
     if bkg is None:
         bkg = []
     max_len = h.shape[1]
@@ -35,8 +36,11 @@ def attention(h,
     e = tf.reshape(e, [-1, hidden_size])
     e = tf.reshape(tf.matmul(e, v), [-1, real_max_len])
     e = tf.nn.softmax(e, name='attention_with_null_word')
-    mask = tf.sequence_mask(doc_len, real_max_len - 1, dtype=tf.float32)
-    mask = tf.pad(mask, [[0, 0], [1, 0]])
+    if auged:
+        mask = tf.sequence_mask(doc_len, real_max_len - 1, dtype=tf.float32)
+        mask = tf.pad(mask, [[0, 0], [1, 0]])
+    else:
+        mask = tf.sequence_mask(doc_len, real_max_len, dtype=tf.float32)
     e = (e * mask)[:, None, :]
     _sum = tf.reduce_sum(e, reduction_indices=2, keepdims=True) + 1e-9
     e = tf.div(e, _sum, name='attention_without_null_word')

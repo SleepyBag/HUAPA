@@ -47,6 +47,7 @@ def build_dataset(filenames, tfrecords_filenames, stats_filename,
                 filename, sep='\t\t', names=reading_col_name, engine='python')
             for filename in filenames
         ]
+
         total_data = pd.concat(data_frames)
         usr = total_data.usr.unique().tolist()
         usr.sort()
@@ -57,47 +58,66 @@ def build_dataset(filenames, tfrecords_filenames, stats_filename,
 
         stats['usr_cnt'] = len(usr)
         stats['prd_cnt'] = len(prd)
+        stats['doc_cnt'] = len(data_frames[0]) + 1
 
-        data_frames[0] = data_process(data_frames[0], wrd_index, usr_index,
-                                      prd_index, max_doc_len, max_sen_len,
-                                      split_by_period, drop)
-        data_frames[1] = data_process(data_frames[1], wrd_index, usr_index,
-                                      prd_index, max_doc_len, max_sen_len,
-                                      split_by_period, .0)
-        data_frames[2] = data_process(data_frames[2], wrd_index, usr_index,
-                                      prd_index, max_doc_len, max_sen_len,
-                                      split_by_period, .0)
+        usr_doc = {}
+        prd_doc = {}
+        for i, item in data_frames[0].iterrows():
+            usr = usr_index[item['usr']]
+            prd = prd_index[item['prd']]
+            if usr not in usr_doc:
+                usr_doc[usr] = []
+            usr_doc[usr].append(i)
+            if prd not in prd_doc:
+                prd_doc[prd] = []
+            prd_doc[prd].append(i)
+
+        data_frames[0] = data_process(
+            data_frames[0], wrd_index, usr_index, prd_index, max_doc_len,
+            max_sen_len, split_by_period, drop, 'INC', usr_doc, prd_doc)
+        data_frames[1] = data_process(
+            data_frames[1], wrd_index, usr_index, prd_index, max_doc_len,
+            max_sen_len, split_by_period, .0, 'ZERO', usr_doc, prd_doc)
+        data_frames[2] = data_process(
+            data_frames[2], wrd_index, usr_index, prd_index, max_doc_len,
+            max_sen_len, split_by_period, .0, 'ZERO', usr_doc, prd_doc)
 
         # build the dataset
         for filename, tfrecords_filename, data_frame in zip(
                 filenames, tfrecords_filenames, data_frames):
-            data_frame['content'] = data_frame['content'].transform(
-                lambda x: x.tostring())
+
+            def to_string(x):
+                return x.tostring()
+
+            data_frame['content'] = data_frame['content'].transform(to_string)
             data_frame['polarity'] = data_frame['polarity'].transform(
-                lambda x: x.tostring())
-            data_frame['sen_len'] = data_frame['sen_len'].transform(
-                lambda x: x.tostring())
+                to_string)
+            data_frame['sen_len'] = data_frame['sen_len'].transform(to_string)
+            data_frame['co_doc'] = data_frame['co_doc'].transform(to_string)
 
             writer = tf.python_io.TFRecordWriter(tfrecords_filename)
+
+            def int64list(value):
+                return tf.train.Feature(
+                    int64_list=tf.train.Int64List(value=value))
+
+            def byteslist(value):
+                return tf.train.Feature(
+                    bytes_list=tf.train.BytesList(value=value))
+
             for item in data_frame.iterrows():
-
-                def int64list(value):
-                    return tf.train.Feature(
-                        int64_list=tf.train.Int64List(value=value))
-
-                def byteslist(value):
-                    return tf.train.Feature(
-                        bytes_list=tf.train.BytesList(value=value))
-
                 feature = {
                     'usr': int64list([item[1]['usr']]),
                     'prd': int64list([item[1]['prd']]),
                     'rating': int64list([item[1]['rating']]),
                     'content': byteslist([item[1]['content']]),
-                    'polarity': byteslist([item[1]['polarity']])
+                    'sen_len': byteslist([item[1]['sen_len']]),
+                    'doc_len': int64list([item[1]['doc_len']]),
+                    'polarity': byteslist([item[1]['polarity']]),
+                    'co_doc': byteslist([item[1]['co_doc']]),
+                    'co_doc_cnt': int64list([item[1]['co_doc_cnt']]),
+                    'docid': int64list([item[1]['docid']])
                 }
-                feature['sen_len'] = byteslist([item[1]['sen_len']])
-                feature['doc_len'] = int64list([item[1]['doc_len']])
 
                 example = tf.train.Example(
                     features=tf.train.Features(feature=feature))
@@ -112,27 +132,32 @@ def build_dataset(filenames, tfrecords_filenames, stats_filename,
             stats_file.writerow([key, val])
 
     def transform_example(example):
+        def int64_feature():
+            return tf.FixedLenFeature(
+                shape=(), dtype=tf.int64, default_value=None)
+
+        def string_feature():
+            return tf.FixedLenFeature(
+                shape=(), dtype=tf.string, default_value=None)
+
         dics = {
-            'usr':
-            tf.FixedLenFeature(shape=(), dtype=tf.int64, default_value=None),
-            'prd':
-            tf.FixedLenFeature(shape=(), dtype=tf.int64, default_value=None),
-            'rating':
-            tf.FixedLenFeature(shape=(), dtype=tf.int64, default_value=None),
-            'content':
-            tf.FixedLenFeature(shape=(), dtype=tf.string, default_value=None),
-            'polarity':
-            tf.FixedLenFeature(shape=(), dtype=tf.string, default_value=None)
+            'usr': int64_feature(),
+            'prd': int64_feature(),
+            'rating': int64_feature(),
+            'content': string_feature(),
+            'polarity': string_feature(),
+            'sen_len': string_feature(),
+            'doc_len': int64_feature(),
+            'co_doc': string_feature(),
+            'co_doc_cnt': int64_feature(),
+            'docid': int64_feature()
         }
-        dics['sen_len'] = tf.FixedLenFeature(
-            shape=(), dtype=tf.string, default_value=None)
-        dics['doc_len'] = tf.FixedLenFeature(
-            shape=(), dtype=tf.int64, default_value=None)
 
         ans = tf.parse_single_example(example, dics)
         ans['content'] = tf.decode_raw(ans['content'], tf.int64)
         ans['polarity'] = tf.decode_raw(ans['polarity'], tf.int64)
         ans['sen_len'] = tf.decode_raw(ans['sen_len'], tf.int64)
+        ans['co_doc'] = tf.decode_raw(ans['co_doc'], tf.int64)
         return ans
 
     for key, val in csv.reader(open(stats_filename)):
@@ -144,11 +169,9 @@ def build_dataset(filenames, tfrecords_filenames, stats_filename,
 
     lengths = [stats[filename + 'len'] for filename in filenames]
     if user_embedding is not None:
-        return datasets, lengths, embedding.values, user_embedding.values, stats[
-            'usr_cnt'], stats['prd_cnt'], wrd_dict
+        return datasets, lengths, embedding.values, user_embedding.values, stats, wrd_dict
     else:
-        return datasets, lengths, embedding.values, None, stats[
-            'usr_cnt'], stats['prd_cnt'], wrd_dict
+        return datasets, lengths, embedding.values, None, stats, wrd_dict
 
 
 # load an embedding file
@@ -206,52 +229,11 @@ def split_paragraph(paragraph, split_by_period):
     return sentences
 
 
-#  def read_files(filenames, wrd_index, usr_index, max_doc_len, max_sen_len, hierarchy, drop):
-#      print('Data frame loaded.')
-#
-#      # count contents' length
-#      for i, df in enumerate(data_frames):
-#          df['content'] = df['content'].transform(partial(split_paragraph, hierarchy=hierarchy))
-#          if i == 0:
-#              df['rating'] = df['rating'].apply(lambda x: x * np.random.choice([0, 1], p=[drop, 1 - drop]))
-#              df = df[df['rating'].isin(range(1, 100))]
-#          df['rating'] = df['rating'] - 1
-#          data_frames[i] = df
-#          # df['max_sen_len'] = df['sen_len'].transform(lambda sen_len: max(sen_len))
-#
-#      # max_doc_len = total_data['doc_len'].max()
-#      # max_sen_len = total_data['max_sen_len'].max()
-#      print('Length counted')
-#
-#      # transform users and products to indices
-#      if usr_index is None:
-#          usr = total_data['usr'].unique().tolist()
-#          usr.sort()
-#          usr = {name: index for index, name in enumerate(usr)}
-#      else:
-#          usr = usr_index
-#      prd = total_data['prd'].unique().tolist()
-#      prd.sort()
-#      prd = {name: index for index, name in enumerate(prd)}
-#      for df in data_frames:
-#          df['usr'] = df['usr'].map(usr)
-#          df['prd'] = df['prd'].map(prd)
-#      print('Users and products indexed.')
-#
-#      # transform contents into indices
-#      for df in data_frames:
-#          df['content'] = df['content'].transform(
-#              partial(sentence_transform, wrd_index=wrd_index, max_doc_len=max_doc_len,
-#                      max_sen_len=max_sen_len, hierarchy=hierarchy))
-#          df['sen_len'] = df['content'].transform(lambda i: np.count_nonzero(i, axis=1))
-#          df['doc_len'] = df['sen_len'].transform(lambda i: np.count_nonzero(i))
-#      print('Contents indexed.')
-#
-#      return data_frames, len(usr), len(prd)
-
-
 def data_process(df, wrd_index, usr_index, prd_index, max_doc_len, max_sen_len,
-                 split_by_period, drop):
+                 split_by_period, drop, docid_type, usr_doc, prd_doc):
+    """
+    docid is fixed to two values: 'INC' and 'ZERO'
+    """
     # count contents' length
     df.content = df.content.transform(
         partial(split_paragraph, split_by_period=split_by_period))
@@ -282,10 +264,34 @@ def data_process(df, wrd_index, usr_index, prd_index, max_doc_len, max_sen_len,
             max_sen_len=max_sen_len,
             split_by_period=split_by_period))
     df['sen_len'] = df.content.transform(lambda i: np.count_nonzero(i, axis=1))
-    df['doc_len'] = df.sen_len.transform(lambda i: np.count_nonzero(i))
+    df['doc_len'] = df.sen_len.transform(np.count_nonzero)
     print('Contents indexed.')
 
+    # add docid intot data
+    if docid_type == 'INC':
+        df['docid'] = df.index + 1
+    elif docid_type == 'ZERO':
+        df['docid'] = 0
+    #  df['co_doc'] = df.
+
+    df['co_doc'] = df.apply(
+        lambda row: query_co_doc(row['usr'], row['prd'], row['docid'], usr_doc,
+                                 prd_doc),
+        axis=1)
+    df['co_doc_cnt'] = df.co_doc.transform(np.count_nonzero)
+    print('co_doc counted')
     return df
+
+
+def query_co_doc(usr, prd, docid, usr_doc, prd_doc):
+    co_doc = usr_doc[usr] + prd_doc[prd]
+    ans = np.zeros(1000, dtype=np.int)
+    ii = 0
+    for doc in co_doc:
+        if doc + 1 != docid:
+            ans[ii] = doc + 1
+            ii += 1
+    return ans
 
 
 polarity_df = pd.read_csv(

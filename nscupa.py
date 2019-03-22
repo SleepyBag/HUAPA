@@ -88,7 +88,7 @@ class NSCUPA(object):
 
             sen_bkg = [tf.reshape(tf.tile(bkg[:, None, :], (1, max_doc_len, 1)),
                                   (-1, self.hidden_size)) for bkg in identities]
-            sen_bkg = hop('attention', True, lstm_outputs, lstm_bkg,
+            sen_bkg = hop('attention', lstm_outputs, lstm_bkg,
                           sen_bkg[0], sen_bkg[1:], sen_len, max_sen_len, '')
         outputs = tf.reshape(sen_bkg, [-1, max_doc_len, self.hidden_size])
 
@@ -98,7 +98,7 @@ class NSCUPA(object):
             lstm_outputs = lstm_bkg
 
             doc_bkg = [i for i in identities]
-            doc_bkg = hop('attention', True, lstm_outputs, lstm_bkg,
+            doc_bkg = hop('attention', lstm_outputs, lstm_bkg,
                           doc_bkg[0], doc_bkg[1:], doc_len, max_doc_len, '')
         outputs = doc_bkg
 

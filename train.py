@@ -35,11 +35,13 @@ params = {
     [("emb_dim", 100, "Dimensionality of character embedding"),
      ("hidden_size", 100, "hidden_size"),
      ('max_sen_len', 50, 'max number of tokens per sentence'),
-     ('max_doc_len', 40, 'max number of tokens per sentence'),
+     ('max_doc_len', 40, 'max number of sentences per document'),
+     ('max_co_doc_cnt', 1000, 'max number of the sum of U(d) and P(d)'),
      ('sen_aspect_cnt', 1, 'max number of tokens per sentence'),
      ('doc_aspect_cnt', 1, 'max number of tokens per document'),
      ('sen_hop_cnt', 1, 'layers of memnet in sentence layer'),
-     ('doc_hop_cnt', 3, 'layers of memnet in document layer'),
+     ('doc_hop_cnt', 1, 'layers of memnet in document layer'),
+     ('hop_cnt', 1, 'layers of memnet in the end'),
      ("lr", .005, "Learning rate"), ("l2_rate", 0.,
                                      "rate of l2 regularization"),
      ("embedding_lr", 1e-5, "embedding learning rate"),
@@ -91,7 +93,7 @@ def load_data(dataset, drop, emb_dim, batch_size, user_pretrain, max_doc_len,
     print(embedding_filename)
     user_embedding_filename = 'data/' + dataset + '/embedding/user_embedding.txt' if user_pretrain else ''
     text_filename = 'data/' + dataset + '/word2vec_train.ss'
-    datasets, lengths, embedding, user_embedding, usr_cnt, prd_cnt, wrd_dict = data.build_dataset(
+    datasets, lengths, embedding, user_embedding, stats, wrd_dict = data.build_dataset(
         datasets, tfrecords, stats_filename, embedding_filename,
         user_embedding_filename, max_doc_len, max_sen_len, flags.split, emb_dim,
         text_filename, drop)
@@ -106,10 +108,10 @@ def load_data(dataset, drop, emb_dim, batch_size, user_pretrain, max_doc_len,
     devset = devset.shuffle(300000).batch(batch_size)
     testset = testset.shuffle(300000).batch(batch_size)
     print("Data loaded.")
-    return embedding, user_embedding, trainset, devset, testset, trainlen, devlen, testlen, usr_cnt, prd_cnt
+    return embedding, user_embedding, trainset, devset, testset, trainlen, devlen, testlen, stats
 
 
-embedding, user_embedding, trainset, devset, testset, trainlen, devlen, testlen, usr_cnt, prd_cnt = load_data(
+embedding, user_embedding, trainset, devset, testset, trainlen, devlen, testlen, stats = load_data(
     flags.dataset,
     flags.drop,
     flags.emb_dim,
@@ -118,6 +120,7 @@ embedding, user_embedding, trainset, devset, testset, trainlen, devlen, testlen,
     flags.max_doc_len,
     flags.max_sen_len,
     repeat=False)
+usr_cnt, prd_cnt, doc_cnt = stats['usr_cnt'], stats['prd_cnt'], stats['doc_cnt']
 if 'alternate' in flags.model:
     _, _, full_trainset, full_devset, full_testset, _, _, _, _, _ = load_data(
         flags.dataset,
@@ -150,6 +153,7 @@ output_file.close()
 model_params = {
     'max_sen_len': flags.max_sen_len,
     'max_doc_len': flags.max_doc_len,
+    'max_co_doc_cnt': flags.max_co_doc_cnt,
     'sen_aspect_cnt': flags.sen_aspect_cnt,
     'doc_aspect_cnt': flags.doc_aspect_cnt,
     'cls_cnt': flags.cls_cnt,
@@ -158,6 +162,7 @@ model_params = {
     'hidden_size': flags.hidden_size,
     'usr_cnt': usr_cnt,
     'prd_cnt': prd_cnt,
+    'doc_cnt': doc_cnt,
     'l2_rate': flags.l2_rate,
     'debug': flags.debug,
     'lambda1': flags.lambda1,
@@ -165,6 +170,7 @@ model_params = {
     'lambda3': flags.lambda3,
     'sen_hop_cnt': flags.sen_hop_cnt,
     'doc_hop_cnt': flags.doc_hop_cnt,
+    'hop_cnt': flags.hop_cnt,
     'embedding_lr': flags.embedding_lr
 }
 exec('from ' + flags.model + ' import ' + flags.model.upper() + ' as model')
