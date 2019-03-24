@@ -11,7 +11,9 @@ def nsc_document_layer(x,
                        hidden_size,
                        doc_hop_cnt=1,
                        bidirectional_lstm=True,
-                       lstm_cells=None):
+                       lstm_cells=None,
+                       auged=False,
+                       attention_type='additive'):
 
     outputs = []
     with tf.variable_scope('document_layer'):
@@ -28,12 +30,30 @@ def nsc_document_layer(x,
         doc_bkg = [i for i in identities]
         for ihop in range(doc_hop_cnt):
             if doc_bkg:
-                doc_bkg[0] = hop('hop', lstm_outputs, lstm_bkg, doc_bkg[0],
-                                 doc_bkg[1:], doc_len, max_doc_len, '')
+                doc_bkg[0] = hop(
+                    'hop',
+                    lstm_outputs,
+                    lstm_bkg,
+                    doc_bkg[0],
+                    doc_bkg[1:],
+                    doc_len,
+                    max_doc_len,
+                    '',
+                    auged=auged,
+                    attention_type=attention_type)
                 output = doc_bkg[0]
             else:
-                output = hop('hop', lstm_outputs, lstm_bkg, None, None,
-                             doc_len, max_doc_len, '')
+                output = hop(
+                    'hop',
+                    lstm_outputs,
+                    lstm_bkg,
+                    None,
+                    None,
+                    doc_len,
+                    max_doc_len,
+                    '',
+                    auged=auged,
+                    attention_type=attention_type)
             outputs.append(output)
         outputs = tf.concat(outputs, axis=-1)
 

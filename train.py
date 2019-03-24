@@ -3,24 +3,8 @@
 import os
 import time
 import tensorflow as tf
-from tqdm import tqdm
-import data
 from colored import fg, stylize
-import math
-
-
-# delete all flags that remained by last run
-def del_all_flags(FLAGS):
-    flags_dict = FLAGS._flags()
-    keys_list = [keys for keys in flags_dict]
-    for keys in keys_list:
-        FLAGS.__delattr__(keys)
-
-
-try:
-    del_all_flags(tf.flags.FLAGS)
-except:
-    pass
+from utils import run_set, load_data, get_step_cnt, get_variable_in_checkpoint_file, get_variables_to_restore
 
 params = {
     'debug_params': [('debug', False, 'Whether to debug or not'),
@@ -49,7 +33,7 @@ params = {
      ("lambda2", .3, "proportion of the loss of user block"),
      ("lambda3", .3, "proportion of the loss of product block"),
      ("bilstm", True, "use biLSTM or LSTM"),
-     ("split", True,
+     ("split_by_period", True,
       "whether to split the document by sentences or fixed length")],
     'training_params': [("batch_size", 100, "Batch Size"),
                         ("epoch_cnt", 10, "Number of training epochs"),
@@ -75,42 +59,6 @@ for param_collection in list(params.values()):
 
 flags = tf.flags.FLAGS
 
-
-def load_data(dataset, drop, emb_dim, batch_size, user_pretrain, max_doc_len,
-              max_sen_len, repeat):
-    # Load data
-    print("Loading data...")
-    datasets = [
-        'data/' + dataset + s for s in ['/train.ss', '/dev.ss', '/test.ss']
-    ]
-    tfrecords = [
-        'data/' + dataset + '/tfrecords' + s
-        for s in ['/train.tfrecord', '/dev.tfrecord', '/test.tfrecord']
-    ]
-    stats_filename = 'data/' + dataset + '/stats/stats.txt' + str(drop)
-    embedding_filename = 'data/' + dataset + '/embedding/embedding' + str(
-        emb_dim) + ('user' if user_pretrain else '') + '.txt'
-    print(embedding_filename)
-    user_embedding_filename = 'data/' + dataset + '/embedding/user_embedding.txt' if user_pretrain else ''
-    text_filename = 'data/' + dataset + '/word2vec_train.ss'
-    datasets, lengths, embedding, user_embedding, stats, wrd_dict = data.build_dataset(
-        datasets, tfrecords, stats_filename, embedding_filename,
-        user_embedding_filename, max_doc_len, max_sen_len, flags.split, emb_dim,
-        text_filename, drop)
-    trainset, devset, testset = datasets
-    trainlen, devlen, testlen = lengths
-    #  trainlen *=  1 - flags.drop
-    if repeat:
-        trainset = trainset.repeat()
-        devset = devset.repeat()
-        testset = testset.repeat()
-    trainset = trainset.shuffle(300000).batch(batch_size).repeat()
-    devset = devset.shuffle(300000).batch(batch_size)
-    testset = testset.shuffle(300000).batch(batch_size)
-    print("Data loaded.")
-    return embedding, user_embedding, trainset, devset, testset, trainlen, devlen, testlen, stats
-
-
 embedding, user_embedding, trainset, devset, testset, trainlen, devlen, testlen, stats = load_data(
     flags.dataset,
     flags.drop,
@@ -119,8 +67,10 @@ embedding, user_embedding, trainset, devset, testset, trainlen, devlen, testlen,
     flags.user_pretrain,
     flags.max_doc_len,
     flags.max_sen_len,
-    repeat=False)
-usr_cnt, prd_cnt, doc_cnt = stats['usr_cnt'], stats['prd_cnt'], stats['doc_cnt']
+    repeat=False,
+    split_by_period=flags.split_by_period)
+usr_cnt, prd_cnt, doc_cnt = stats['usr_cnt'], stats['prd_cnt'], stats[
+    'doc_cnt']
 if 'alternate' in flags.model:
     _, _, full_trainset, full_devset, full_testset, _, _, _, _, _ = load_data(
         flags.dataset,
@@ -130,7 +80,8 @@ if 'alternate' in flags.model:
         flags.user_pretrain,
         flags.max_doc_len,
         flags.max_sen_len,
-        repeat=True)
+        repeat=True,
+        split_by_period=flags.split_by_period)
 
 # save current codes
 cur_time = time.time()
@@ -226,8 +177,16 @@ if flags.checkpoint == '':
     sess.run(tf.global_variables_initializer())
 else:
     # restore the params
-    saver = tf.train.Saver()
-    saver.restore(sess, 'ckpts/' + flags.model + '/' + flags.checkpoint)
+    checkpoint_path = os.path.join(
+        'ckpts', flags.model,
+        flags.checkpoint) if '/' not in flags.checkpoint else os.path.join(
+            'ckpts', flags.checkpoint)
+    global_variables = tf.global_variables()
+    var_keep_dic = get_variable_in_checkpoint_file(checkpoint_path)
+    variable_to_restore = get_variables_to_restore(global_variables,
+                                                   var_keep_dic)
+    saver = tf.train.Saver(variable_to_restore)
+    saver.restore(sess, 'ckpts/' + flags.checkpoint)
 
     # initialize other params
     uninitialized_vars = sess.run(tf.report_uninitialized_variables())
@@ -241,25 +200,6 @@ else:
 if flags.check:
     saver = tf.train.Saver(tf.global_variables(), max_to_keep=1000)
 
-
-# run a dataset
-def run_set(sess, testlen, metrics, ops=tuple()):
-    global flags
-    pgb = tqdm(
-        list(range(int(math.ceil(float(testlen) / flags.batch_size)))),
-        leave=False,
-        dynamic_ncols=True)
-    metrics_total = [0] * len(metrics)
-    op_results = [[] for i in ops]
-    for i in pgb:
-        cur_metrics = sess.run(metrics + ops)
-        for j in range(len(metrics)):
-            metrics_total[j] += cur_metrics[j]
-        for j in range(len(ops)):
-            op_results[j].append(cur_metrics[len(metrics) + j])
-    return [metrics_total] + op_results
-
-
 try:
     for epoch in range(flags.epoch_cnt):
         sess.run(traininit)
@@ -271,11 +211,13 @@ try:
         # cur_trainlen = trainlen if model.best_test_acc < 0.530 \
         #     else flags.evaluate_every * flags.batch_size
         if summary is not None:
-            train_metrics, step, train_summary, _ = \
-                run_set(sess, trainlen, metrics, (global_step, summary, train_op))
+            train_metrics, step, train_summary, _ = run_set(
+                sess, get_step_cnt(trainlen, flags.batch_size), metrics,
+                [(global_step, 'ALL'), (summary, 'ALL'), (train_op, 'NONE')])
         else:
-            train_metrics, step, _ = \
-                run_set(sess, trainlen, metrics, (global_step, train_op))
+            train_metrics, step, _ = run_set(
+                sess, get_step_cnt(trainlen, flags.batch_size), metrics,
+                [(global_step, 'ALL'), (train_op, 'NONE')])
         #  train_metrics, step, _ = \
         #      run_set(sess, trainlen, metrics, (global_step, train_op, ))
         info = model.output_metrics(train_metrics, trainlen)
@@ -290,7 +232,8 @@ try:
 
         # test on devset
         sess.run(devinit)
-        dev_metrics, = run_set(sess, devlen, metrics)
+        dev_metrics, = run_set(sess, get_step_cnt(devlen, flags.batch_size),
+                               metrics)
         info = model.output_metrics(dev_metrics, devlen)
         info = 'Devset:  ' + info
         print((stylize(info, fg('green'))))
@@ -298,7 +241,8 @@ try:
 
         # test on testset
         sess.run(testinit)
-        test_metrics, = run_set(sess, testlen, metrics)
+        test_metrics, = run_set(sess, get_step_cnt(testlen, flags.batch_size),
+                                metrics)
         info = model.output_metrics(test_metrics, testlen)
         info = 'Testset: ' + info
         print((stylize(info, fg('red'))))

@@ -3,6 +3,7 @@ import tensorflow as tf
 from tensorflow import constant as const
 from layers.nsc_sentence_layer import nsc_sentence_layer
 from layers.nsc_document_layer import nsc_document_layer
+from layers.lstm import lstm
 lookup = tf.nn.embedding_lookup
 
 
@@ -10,7 +11,7 @@ def var(name, shape, initializer):
     return tf.get_variable(name, shape=shape, initializer=initializer)
 
 
-class AUGMENTED_DHUAPA_MUTUAL(object):
+class AMHNSC_POLARITY(object):
     def __init__(self, args):
         self.max_doc_len = args['max_doc_len']
         self.max_sen_len = args['max_sen_len']
@@ -62,10 +63,11 @@ class AUGMENTED_DHUAPA_MUTUAL(object):
         # get the inputs
         with tf.variable_scope('inputs'):
             input_map = data_iter.get_next()
-            usrid, prdid, input_x, input_y, sen_len, doc_len = \
+            usrid, prdid, input_x, input_y, sen_len, doc_len, polarity = \
                 (input_map['usr'], input_map['prd'],
                  input_map['content'], input_map['rating'],
-                 input_map['sen_len'], input_map['doc_len'])
+                 input_map['sen_len'], input_map['doc_len'],
+                 input_map['polarity'])
 
             usr = lookup(
                 self.embeddings['usr_emb'], usrid, name='cur_usr_embedding')
@@ -73,7 +75,12 @@ class AUGMENTED_DHUAPA_MUTUAL(object):
                 self.embeddings['prd_emb'], prdid, name='cur_prd_embedding')
             input_x = lookup(
                 self.embeddings['wrd_emb'], input_x, name='cur_wrd_embedding')
-
+            input_x = tf.reshape(
+                input_x,
+                [-1, self.max_doc_len, self.max_sen_len, self.emb_dim])
+            sen_len = tf.reshape(sen_len, [-1, self.max_doc_len])
+            polarity = tf.reshape(polarity,
+                                  [-1, self.max_doc_len, self.max_sen_len])
             nscua_input_x, nscpa_input_x = input_x, input_x
 
         # padding content with user embedding
@@ -93,15 +100,9 @@ class AUGMENTED_DHUAPA_MUTUAL(object):
                             [1, self.max_doc_len, 1, 1])
         tiled_prd = tf.tile(tiled_prd[:, None, None, :],
                             [1, self.max_doc_len, 1, 1])
-        nscua_input_x = tf.reshape(
-            nscua_input_x,
-            [-1, self.max_doc_len, self.max_sen_len, self.emb_dim])
         nscua_input_x = tf.concat([tiled_usr, nscua_input_x], axis=2)
-        nscpa_input_x = tf.reshape(
-            nscpa_input_x,
-            [-1, self.max_doc_len, self.max_sen_len, self.emb_dim])
         nscpa_input_x = tf.concat([tiled_prd, nscpa_input_x], axis=2)
-        sen_len = tf.where(
+        aug_sen_len = tf.where(
             tf.equal(sen_len, 0), tf.zeros_like(sen_len), sen_len + 1)
         self.max_sen_len += 1
         nscua_input_x = tf.reshape(nscua_input_x,
@@ -119,41 +120,72 @@ class AUGMENTED_DHUAPA_MUTUAL(object):
             self.hidden_size // 2,
             forget_bias=0.,
             initializer=self.weights_initializer)
-        for scope, identities, input_x in zip(['user_block', 'product_block'],
-                                              [[usr], [prd]],
-                                              [nscua_input_x, nscpa_input_x]):
+        for scope, identities, cur_input_x in zip(
+            ['user_block', 'product_block'], [[usr], [prd]],
+            [nscua_input_x, nscpa_input_x]):
             with tf.variable_scope(scope):
                 sen_embs.append(
                     nsc_sentence_layer(
-                        input_x,
+                        cur_input_x,
                         self.max_sen_len,
                         self.max_doc_len,
-                        sen_len,
+                        aug_sen_len,
                         identities,
                         self.hidden_size,
                         self.emb_dim,
                         self.sen_hop_cnt,
                         bidirectional_lstm=True,
                         lstm_cells=[sen_cell_fw, sen_cell_bw]))
+        lstm_out, _state = lstm(
+            tf.reshape(input_x, [-1, self.max_sen_len - 1, self.emb_dim]),
+            tf.reshape(sen_len, [-1]),
+            self.hidden_size,
+            'lstm_bkg',
+            bidirectional=True,
+            lstm_cells=[sen_cell_fw, sen_cell_bw])
+        is_polarity = tf.where(
+            tf.equal(polarity, 0), tf.zeros_like(polarity),
+            tf.ones_like(polarity))
+        is_polarity = tf.to_float(is_polarity)
+        is_polarity = tf.reshape(is_polarity, [-1, self.max_sen_len - 1])
+        is_polarity_sum = tf.reduce_sum(is_polarity, axis=-1)
+        is_polarity_sum = tf.where(
+            tf.equal(is_polarity_sum, 0), tf.ones_like(is_polarity_sum),
+            is_polarity_sum)
+        is_polarity = is_polarity / is_polarity_sum[:, None]
+        lstm_out = tf.reshape(lstm_out,
+                              [-1, self.max_sen_len - 1, self.hidden_size])
+        is_polarity = tf.reshape(is_polarity, [-1, 1, self.max_sen_len - 1])
+        lstm_out = tf.matmul(is_polarity, lstm_out)
+        lstm_out = tf.reshape(lstm_out,
+                              [-1, self.max_doc_len, self.hidden_size])
+        sen_embs.append(lstm_out)
 
         sen_embs = tf.concat(sen_embs, axis=-1)
+        sen_embs = tf.layers.dense(
+            sen_embs,
+            self.emb_dim,
+            kernel_initializer=self.weights_initializer,
+            bias_initializer=self.biases_initializer)
 
         nscua_sen_embs, nscpa_sen_embs = sen_embs, sen_embs
         # padding doc with user and product embeddings
         doc_aug_usr = tf.layers.dense(
             usr,
-            2 * self.hidden_size,
+            self.emb_dim,
             use_bias=False,
             kernel_initializer=self.weights_initializer,
             bias_initializer=self.biases_initializer)
         doc_aug_prd = tf.layers.dense(
             prd,
-            2 * self.hidden_size,
+            self.emb_dim,
             use_bias=False,
             kernel_initializer=self.weights_initializer,
             bias_initializer=self.biases_initializer)
-        nscua_sen_embs = tf.concat([doc_aug_usr[:, None, :], nscua_sen_embs], axis=1)
-        nscpa_sen_embs = tf.concat([doc_aug_prd[:, None, :], nscpa_sen_embs], axis=1)
+        nscua_sen_embs = tf.concat([doc_aug_usr[:, None, :], nscua_sen_embs],
+                                   axis=1)
+        nscpa_sen_embs = tf.concat([doc_aug_prd[:, None, :], nscpa_sen_embs],
+                                   axis=1)
         #  none_sen_embs = tf.pad(sen_embs, [[0, 0], [1, 0], [0, 0]])
         self.max_doc_len += 1
         doc_len = doc_len + 1
@@ -167,8 +199,8 @@ class AUGMENTED_DHUAPA_MUTUAL(object):
             forget_bias=0.,
             initializer=self.weights_initializer)
         for scope, identities, input_x in zip(
-                ['user_block', 'product_block'], [[usr], [prd]],
-                [nscua_sen_embs, nscpa_sen_embs]):
+            ['user_block', 'product_block'], [[usr], [prd]],
+            [nscua_sen_embs, nscpa_sen_embs]):
             with tf.variable_scope(scope):
                 doc_emb = nsc_document_layer(
                     input_x,

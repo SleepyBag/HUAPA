@@ -1,6 +1,7 @@
 __pycache__
 *.pyc
 data/
+ckpts/
 checkpoints/
 check_points/
 summary/

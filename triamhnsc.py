@@ -10,7 +10,7 @@ def var(name, shape, initializer):
     return tf.get_variable(name, shape=shape, initializer=initializer)
 
 
-class AMHNSC_PORALITY(object):
+class TRIAMHNSC(object):
     def __init__(self, args):
         self.max_doc_len = args['max_doc_len']
         self.max_sen_len = args['max_sen_len']
@@ -45,9 +45,6 @@ class AMHNSC_PORALITY(object):
                 'wrd_emb':
                 const(self.embedding, name='wrd_emb', dtype=tf.float32),
                 #  tf.Variable(self.embedding, name='wrd_emb', dtype=tf.float32),
-                'polarity_emb':
-                #  const(self.embedding, name='wrd_emb', dtype=tf.float32),
-                var('polarity_emb', [10, self.emb_dim], self.emb_initializer),
                 'usr_emb':
                 var('usr_emb', [self.usr_cnt, self.emb_dim],
                     self.emb_initializer),
@@ -65,11 +62,10 @@ class AMHNSC_PORALITY(object):
         # get the inputs
         with tf.variable_scope('inputs'):
             input_map = data_iter.get_next()
-            usrid, prdid, input_x, input_y, sen_len, doc_len, polarity = \
+            usrid, prdid, input_x, input_y, sen_len, doc_len = \
                 (input_map['usr'], input_map['prd'],
                  input_map['content'], input_map['rating'],
-                 input_map['sen_len'], input_map['doc_len'],
-                 input_map['polarity'])
+                 input_map['sen_len'], input_map['doc_len'])
 
             usr = lookup(
                 self.embeddings['usr_emb'], usrid, name='cur_usr_embedding')
@@ -77,17 +73,11 @@ class AMHNSC_PORALITY(object):
                 self.embeddings['prd_emb'], prdid, name='cur_prd_embedding')
             input_x = lookup(
                 self.embeddings['wrd_emb'], input_x, name='cur_wrd_embedding')
-            polarity_emb = lookup(
-                self.embeddings['polarity_emb'],
-                polarity,
-                name='cur_polarity_embedding')
-            polarity_emb = tf.where(
-                tf.tile(
-                    tf.equal(polarity, 100)[:, :, None], [1, 1, self.emb_dim]),
-                tf.zeros_like(polarity_emb), polarity_emb)
-            input_x = input_x + polarity_emb
 
-            nscua_input_x, nscpa_input_x = input_x, input_x
+            input_x = tf.reshape(
+                input_x,
+                [-1, self.max_doc_len, self.max_sen_len, self.emb_dim])
+            nscua_input_x, nscpa_input_x, nscga_input_x = input_x, input_x, input_x
 
         # padding content with user embedding
         tiled_usr = tf.layers.dense(
@@ -106,15 +96,10 @@ class AMHNSC_PORALITY(object):
                             [1, self.max_doc_len, 1, 1])
         tiled_prd = tf.tile(tiled_prd[:, None, None, :],
                             [1, self.max_doc_len, 1, 1])
-        nscua_input_x = tf.reshape(
-            nscua_input_x,
-            [-1, self.max_doc_len, self.max_sen_len, self.emb_dim])
         nscua_input_x = tf.concat([tiled_usr, nscua_input_x], axis=2)
-        nscpa_input_x = tf.reshape(
-            nscpa_input_x,
-            [-1, self.max_doc_len, self.max_sen_len, self.emb_dim])
         nscpa_input_x = tf.concat([tiled_prd, nscpa_input_x], axis=2)
-        sen_len = tf.where(
+        nscga_input_x = tf.pad(nscga_input_x, [[0, 0], [0, 0], [0, 1], [0, 0]])
+        aug_sen_len = tf.where(
             tf.equal(sen_len, 0), tf.zeros_like(sen_len), sen_len + 1)
         self.max_sen_len += 1
         nscua_input_x = tf.reshape(nscua_input_x,
@@ -132,16 +117,16 @@ class AMHNSC_PORALITY(object):
             self.hidden_size // 2,
             forget_bias=0.,
             initializer=self.weights_initializer)
-        for scope, identities, input_x in zip(['user_block', 'product_block'],
-                                              [[usr], [prd]],
-                                              [nscua_input_x, nscpa_input_x]):
+        for scope, identities, cur_input_x in zip(
+                ['user_block', 'product_block', 'global_block'],
+                [[usr], [prd], []], [nscua_input_x, nscpa_input_x, nscga_input_x]):
             with tf.variable_scope(scope):
                 sen_embs.append(
                     nsc_sentence_layer(
-                        input_x,
+                        cur_input_x,
                         self.max_sen_len,
                         self.max_doc_len,
-                        sen_len,
+                        aug_sen_len if input is not nscga_input_x else sen_len,
                         identities,
                         self.hidden_size,
                         self.emb_dim,
@@ -150,18 +135,23 @@ class AMHNSC_PORALITY(object):
                         lstm_cells=[sen_cell_fw, sen_cell_bw]))
 
         sen_embs = tf.concat(sen_embs, axis=-1)
+        sen_embs = tf.layers.dense(
+            sen_embs,
+            self.emb_dim,
+            kernel_initializer=self.weights_initializer,
+            bias_initializer=self.biases_initializer)
 
-        nscua_sen_embs, nscpa_sen_embs = sen_embs, sen_embs
+        nscua_sen_embs, nscpa_sen_embs, nscga_sen_embs = sen_embs, sen_embs, sen_embs
         # padding doc with user and product embeddings
         doc_aug_usr = tf.layers.dense(
             usr,
-            2 * self.hidden_size,
+            self.emb_dim,
             use_bias=False,
             kernel_initializer=self.weights_initializer,
             bias_initializer=self.biases_initializer)
         doc_aug_prd = tf.layers.dense(
             prd,
-            2 * self.hidden_size,
+            self.emb_dim,
             use_bias=False,
             kernel_initializer=self.weights_initializer,
             bias_initializer=self.biases_initializer)
@@ -169,9 +159,10 @@ class AMHNSC_PORALITY(object):
                                    axis=1)
         nscpa_sen_embs = tf.concat([doc_aug_prd[:, None, :], nscpa_sen_embs],
                                    axis=1)
+        nscga_sen_embs = tf.pad(nscga_sen_embs, [[0, 0], [0, 1], [0, 0]])
         #  none_sen_embs = tf.pad(sen_embs, [[0, 0], [1, 0], [0, 0]])
         self.max_doc_len += 1
-        doc_len = doc_len + 1
+        aug_doc_len = doc_len + 1
 
         doc_cell_fw = tf.nn.rnn_cell.LSTMCell(
             self.hidden_size // 2,
@@ -182,13 +173,14 @@ class AMHNSC_PORALITY(object):
             forget_bias=0.,
             initializer=self.weights_initializer)
         for scope, identities, input_x in zip(
-                ['user_block', 'product_block'], [[usr], [prd]],
-                [nscua_sen_embs, nscpa_sen_embs]):
+                ['user_block', 'product_block', 'global_block'],
+                [[usr], [prd], []],
+                [nscua_sen_embs, nscpa_sen_embs, nscga_sen_embs]):
             with tf.variable_scope(scope):
                 doc_emb = nsc_document_layer(
                     input_x,
                     self.max_doc_len,
-                    doc_len,
+                    aug_doc_len if input is not nscga_sen_embs else doc_len,
                     identities,
                     self.hidden_size,
                     self.doc_hop_cnt,
@@ -204,7 +196,7 @@ class AMHNSC_PORALITY(object):
                             kernel_initializer=self.weights_initializer,
                             bias_initializer=self.biases_initializer))
 
-        nscua_logit, nscpa_logit = logits
+        nscua_logit, nscpa_logit, _ = logits
 
         with tf.variable_scope('result'):
             doc_emb = tf.concat(doc_embs, axis=1, name='dhuapa_output')
